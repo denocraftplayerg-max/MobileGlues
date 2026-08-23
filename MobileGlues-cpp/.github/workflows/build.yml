@@ -1,0 +1,38 @@
+name: Build MobileGlues for Android arm64
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          add-to-path: true
+
+      - name: Configure CMake
+        run: |
+          cmake \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-29 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -S MobileGlues-cpp \
+            -B build
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libmobileglues-arm64
+          path: build/libmobileglues.so
