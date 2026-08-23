@@ -1,29 +1,38 @@
-name: Build MobileGlues for iOS
+name: Build MobileGlues for Android arm64
+
 on: [push, workflow_dispatch]
+
 jobs:
-  build-ios:
-    runs-on: macos-latest
+  build-android:
+    runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Build MobileGlues
-        run: |
-          cd MobileGlues-cpp
-          wget https://github.com/leetal/ios-cmake/raw/master/ios.toolchain.cmake
-          cmake -B build \
-            -DCMAKE_TOOLCHAIN_FILE=ios.toolchain.cmake \
-            -DSTATICLIB=OFF \
-            -DMACOS=ON \
-            -DPLATFORM=OS64 \
-            -DCMAKE_C_FLAGS=-Wno-error=implicit-function-declaration
-          cmake --build build --config RelWithDebInfo --target mobileglues
-          codesign -s - build/libmobileglues.dylib
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          add-to-path: true
 
-      - name: Upload lib
+      - name: Configure CMake
+        run: |
+          cmake \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-29 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -S MobileGlues-cpp \
+            -B build
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MobileGlues-iOS-dylib
-          path: /Users/runner/work/MobileGlues/MobileGlues/MobileGlues-cpp/build
+          name: libmobileglues-arm64
+          path: build/libmobileglues.so
