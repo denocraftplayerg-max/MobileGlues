@@ -2032,3 +2032,86 @@ void glPixelStoref(GLenum pname, GLfloat param) {
     glPixelStorei(pname, (GLint)lroundf(param));
     CHECK_GL_ERROR
 }
+
+// ---------------------------------------------------------------------------
+// GL_EXT_texture_buffer support
+// ---------------------------------------------------------------------------
+// Caches texture buffers to avoid creating multiple small textures for
+// large data arrays.
+
+#include <unordered_map>
+#include <atomic>
+
+std::unordered_map<uint64_t, TextureBufferCacheEntry> g_texture_buffer_cache;
+std::atomic<uint64_t> g_texture_buffer_hits{0};
+std::atomic<uint64_t> g_texture_buffer_misses{0};
+
+// Generate a cache key from buffer, format, offset, and size
+static uint64_t make_texture_buffer_key(GLuint buffer, GLenum internalformat, GLintptr offset, GLsizeiptr size) {
+    uint64_t key = static_cast<uint64_t>(buffer);
+    key = (key << 32) | static_cast<uint64_t>(internalformat & 0xFFFFFFFF);
+    key = (key << 32) | static_cast<uint64_t>(offset & 0xFFFFFFFF);
+    key = (key << 32) | static_cast<uint64_t>(size & 0xFFFFFFFF);
+    return key;
+}
+
+// Get or create a texture buffer for the given buffer
+GLuint get_or_create_texture_buffer(GLuint buffer, GLenum internalformat, GLintptr offset, GLsizeiptr size) {
+    if (!GLES.glTexBuffer || !GLES.glGenTextures) {
+        return 0;
+    }
+    
+    uint64_t key = make_texture_buffer_key(buffer, internalformat, offset, size);
+    auto it = g_texture_buffer_cache.find(key);
+    
+    if (it != g_texture_buffer_cache.end() && it->second.valid) {
+        // Check if buffer and texture still exist
+        GLint buffer_status = 0, tex_status = 0;
+        GLES.glGetBufferParameteriv(GL_ARRAY_BUFFER, GL_BUFFER_SIZE, &buffer_status);
+        GLES.glGetTexParameteriv(GL_TEXTURE_BUFFER, GL_TEXTURE_IMMUTABLE_FORMAT, &tex_status);
+        
+        if (buffer_status > 0 && tex_status != GL_FALSE) {
+            g_texture_buffer_hits.fetch_add(1, std::memory_order_relaxed);
+            return it->second.texture;
+        }
+        // Invalidated, fall through to create new
+        it->second.valid = false;
+    }
+    
+    g_texture_buffer_misses.fetch_add(1, std::memory_order_relaxed);
+    
+    // Create new texture buffer
+    GLuint texture = 0;
+    GLES.glGenTextures(1, &texture);
+    if (texture == 0) return 0;
+    
+    GLES.glBindTexture(GL_TEXTURE_BUFFER, texture);
+    GLES.glTexBuffer(GL_TEXTURE_BUFFER, internalformat, buffer);
+    
+    // Store in cache
+    TextureBufferCacheEntry entry;
+    entry.texture = texture;
+    entry.buffer = buffer;
+    entry.internalformat = internalformat;
+    entry.offset = offset;
+    entry.size = size;
+    entry.valid = true;
+    
+    g_texture_buffer_cache[key] = std::move(entry);
+    return texture;
+}
+
+// GL_EXT_texture_buffer API
+extern "C" GLAPI GLAPIENTRY void glGetTextureBufferCacheStatsEXT(uint64_t* hits, uint64_t* misses) {
+    if (hits) *hits = g_texture_buffer_hits.load(std::memory_order_relaxed);
+    if (misses) *misses = g_texture_buffer_misses.load(std::memory_order_relaxed);
+}
+
+extern "C" GLAPI GLAPIENTRY void glResetTextureBufferCacheStatsEXT() {
+    g_texture_buffer_hits.store(0, std::memory_order_relaxed);
+    g_texture_buffer_misses.store(0, std::memory_order_relaxed);
+}
+
+extern "C" GLAPI GLAPIENTRY GLuint glGetTextureBufferForBufferEXT(GLuint buffer, GLenum internalformat, GLintptr offset, GLsizeiptr size) {
+    return get_or_create_texture_buffer(buffer, internalformat, offset, size);
+}

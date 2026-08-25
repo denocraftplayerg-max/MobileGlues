@@ -573,3 +573,47 @@ GLenum glCheckFramebufferStatus(GLenum target) {
     }
     return status;
 }
+
+// ---------------------------------------------------------------------------
+// GL_EXT_shader_framebuffer_fetch support
+// ---------------------------------------------------------------------------
+// Allows shaders to read the current framebuffer color value directly
+// without an intermediate render target.
+
+static std::atomic<bool> g_framebuffer_fetch_enabled{false};
+static std::atomic<uint64_t> g_framebuffer_fetch_uses{0};
+
+extern "C" GLAPI GLAPIENTRY void glFramebufferFetchEnableEXT() {
+    LOG()
+    if (GLES.glGetStringi) {
+        // Check if extension is supported
+        GLint num_ext = 0;
+        GLES.glGetIntegerv(GL_NUM_EXTENSIONS, &num_ext);
+        bool supported = false;
+        for (GLint i = 0; i < num_ext; ++i) {
+            const GLubyte* ext = GLES.glGetStringi(GL_EXTENSIONS, i);
+            if (ext && strcmp((const char*)ext, "GL_EXT_shader_framebuffer_fetch") == 0) {
+                supported = true;
+                break;
+            }
+        }
+        if (supported) {
+            g_framebuffer_fetch_enabled.store(true, std::memory_order_relaxed);
+            LOG_D("GL_EXT_shader_framebuffer_fetch enabled")
+        } else {
+            LOG_W_FORCE("GL_EXT_shader_framebuffer_fetch not supported on this device")
+        }
+    }
+    CHECK_GL_ERROR
+}
+
+extern "C" GLAPI GLAPIENTRY void glFramebufferFetchDisableEXT() {
+    LOG()
+    g_framebuffer_fetch_enabled.store(false, std::memory_order_relaxed);
+    LOG_D("GL_EXT_shader_framebuffer_fetch disabled")
+    CHECK_GL_ERROR
+}
+
+extern "C" GLAPI GLAPIENTRY void glGetFramebufferFetchStatsEXT(bool* enabled) {
+    if (enabled) *enabled = g_framebuffer_fetch_enabled.load(std::memory_order_relaxed);
+}

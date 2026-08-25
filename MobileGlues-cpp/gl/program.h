@@ -25,6 +25,19 @@ extern "C"
     GLAPI GLAPIENTRY void glGetActiveUniformName(GLuint program, GLuint uniformIndex, GLsizei bufSize, GLsizei* length,
                                                  GLchar* uniformName);
 
+    // GL_EXT_separate_shader_objects - Program Pipeline support
+    GLAPI GLAPIENTRY void glGenProgramPipelines(GLsizei n, GLuint* pipelines);
+    GLAPI GLAPIENTRY void glDeleteProgramPipelines(GLsizei n, const GLuint* pipelines);
+    GLAPI GLAPIENTRY void glBindProgramPipeline(GLuint pipeline);
+    GLAPI GLAPIENTRY void glUseProgramStages(GLuint pipeline, GLbitfield stages, GLuint program);
+    GLAPI GLAPIENTRY GLboolean glIsProgramPipeline(GLuint pipeline);
+    GLAPI GLAPIENTRY void glGetProgramPipelineiv(GLuint pipeline, GLenum pname, GLint* params);
+    GLAPI GLAPIENTRY GLuint glCreateShaderProgramv(GLenum type, GLsizei count, const GLchar* const* strings);
+    
+    // Pipeline cache stats
+    GLAPI GLAPIENTRY void glGetPipelineCacheStatsEXT(uint64_t* hits, uint64_t* misses);
+    GLAPI GLAPIENTRY void glResetPipelineCacheStatsEXT();
+
 #ifdef __cplusplus
 }
 #endif

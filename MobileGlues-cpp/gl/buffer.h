@@ -4,7 +4,6 @@
 //   https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
 // SPDX-License-Identifier: LGPL-2.1-only
 // End of Source File Header
-
 #ifndef MOBILEGLUES_BUFFER_H
 #define GL_GLEXT_PROTOTYPES
 #include "../config/settings.h"
@@ -16,11 +15,43 @@
 #include <GL/gl.h>
 #include <cstddef>
 #include <vector>
+#include <unordered_map>
+#include <atomic>
 
 #ifdef __cplusplus
 extern "C"
 {
 #endif
+
+    // The real/driver name bound to target, as GLES.glGetIntegerv(<target>_BINDING)
+    // would report it -- the two functions above answer with this layer's own
+    // names, which the driver has never heard of. Computed from tracked state, so
+    // it costs nothing and is safe to call per draw, and it is the value to hand
+    // straight back to GLES.glBindBuffer when restoring a temporary bind.
+    //
+    // Only valid where the driver's binding still agrees with the tracked one; the
+    // comment on the definition in gl/buffer.cpp lists where it does not.
+    GLuint mg_driver_bound_buffer(GLenum target);
+
+    // Persistent buffer mapping support (GL_EXT_buffer_storage)
+    struct PersistentBufferMapping {
+        GLuint buffer = 0;
+        void* mapped_ptr = nullptr;
+        GLintptr offset = 0;
+        GLsizeiptr length = 0;
+        GLbitfield access = 0;
+        bool active = false;
+    };
+
+    // Track persistent mappings per buffer
+    extern std::unordered_map<GLuint, PersistentBufferMapping> g_persistent_buffer_mappings;
+    extern std::atomic<uint64_t> g_buffer_upload_time_us;
+    extern std::atomic<bool> g_persistent_buffer_enabled;
+
+    // Get or create persistent mapping for a buffer
+    void* get_persistent_buffer_mapping(GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access);
+    void flush_persistent_buffer_mapping(GLuint buffer);
+    void unmap_persistent_buffer(GLuint buffer);
 
     GLuint gen_buffer();
 
@@ -37,16 +68,6 @@ extern "C"
     // target is a bind target, the kind glBindBuffer is given. Not interchangeable
     // with the above: each rejects the other's enums and returns 0.
     GLuint find_bound_buffer_by_target(GLenum target);
-
-    // The real/driver name bound to target, as GLES.glGetIntegerv(<target>_BINDING)
-    // would report it -- the two functions above answer with this layer's own
-    // names, which the driver has never heard of. Computed from tracked state, so
-    // it costs nothing and is safe to call per draw, and it is the value to hand
-    // straight back to GLES.glBindBuffer when restoring a temporary bind.
-    //
-    // Only valid where the driver's binding still agrees with the tracked one; the
-    // comment on the definition in gl/buffer.cpp lists where it does not.
-    GLuint mg_driver_bound_buffer(GLenum target);
 
     GLuint gen_array();
 
@@ -97,6 +118,11 @@ extern "C"
     GLAPI GLAPIENTRY void glBufferStorage(GLenum target, GLsizeiptr size, const void* data, GLbitfield flags);
 
     GLAPI GLAPIENTRY void glFlushMappedBufferRange(GLenum target, GLintptr offset, GLsizeiptr length);
+
+    // Persistent buffer stats API
+    GLAPI GLAPIENTRY void glGetPersistentBufferStatsEXT(uint64_t* upload_time_us, bool* enabled);
+    GLAPI GLAPIENTRY void glSetPersistentBufferEnabledEXT(bool enabled);
+    GLAPI GLAPIENTRY void glResetPersistentBufferStatsEXT();
 
     GLAPI GLAPIENTRY void glGenVertexArrays(GLsizei n, GLuint* arrays);
 

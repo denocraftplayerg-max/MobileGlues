@@ -4,7 +4,6 @@
 //   https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
 // SPDX-License-Identifier: LGPL-2.1-only
 // End of Source File Header
-
 #include <regex.h>
 #include "GL/glext.h"
 #include "GLES3/gl32.h"
@@ -16,6 +15,171 @@
 #include <iostream>
 #include "../config/settings.h"
 #include "drawing.h"
+
+#include <unordered_map>
+#include <atomic>
+
+// Program pipeline cache for GL_EXT_separate_shader_objects
+struct PipelineCacheEntry {
+    GLuint pipeline = 0;
+    GLuint vertex_program = 0;
+    GLuint fragment_program = 0;
+    bool valid = false;
+};
+
+static std::unordered_map<uint64_t, PipelineCacheEntry> g_pipeline_cache;
+static std::atomic<uint64_t> g_pipeline_hits{0};
+static std::atomic<uint64_t> g_pipeline_misses{0};
+
+// Generate a cache key from vertex and fragment program handles
+static uint64_t make_pipeline_key(GLuint vertex_prog, GLuint fragment_prog) {
+    return (static_cast<uint64_t>(vertex_prog) << 32) | static_cast<uint64_t>(fragment_prog);
+}
+
+void glGenProgramPipelines(GLsizei n, GLuint* pipelines) {
+    LOG()
+    LOG_D("glGenProgramPipelines(%d, %p)", n, pipelines)
+    if (GLES.glGenProgramPipelines) {
+        GLES.glGenProgramPipelines(n, pipelines);
+    } else {
+        for (int i = 0; i < n; ++i) {
+            pipelines[i] = 0;
+        }
+    }
+    CHECK_GL_ERROR
+}
+
+void glDeleteProgramPipelines(GLsizei n, const GLuint* pipelines) {
+    LOG()
+    LOG_D("glDeleteProgramPipelines(%d, %p)", n, pipelines)
+    if (GLES.glDeleteProgramPipelines) {
+        for (int i = 0; i < n; ++i) {
+            // Also remove from cache
+            for (auto it = g_pipeline_cache.begin(); it != g_pipeline_cache.end(); ) {
+                if (it->second.pipeline == pipelines[i]) {
+                    it = g_pipeline_cache.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        GLES.glDeleteProgramPipelines(n, pipelines);
+    }
+    CHECK_GL_ERROR
+}
+
+void glBindProgramPipeline(GLuint pipeline) {
+    LOG()
+    LOG_D("glBindProgramPipeline(%u)", pipeline)
+    if (GLES.glBindProgramPipeline) {
+        GLES.glBindProgramPipeline(pipeline);
+    }
+    CHECK_GL_ERROR
+}
+
+void glUseProgramStages(GLuint pipeline, GLbitfield stages, GLuint program) {
+    LOG()
+    LOG_D("glUseProgramStages(%u, 0x%x, %u)", pipeline, stages, program)
+    if (GLES.glUseProgramStages) {
+        GLES.glUseProgramStages(pipeline, stages, program);
+    }
+    CHECK_GL_ERROR
+}
+
+GLboolean glIsProgramPipeline(GLuint pipeline) {
+    LOG()
+    LOG_D("glIsProgramPipeline(%u)", pipeline)
+    if (GLES.glIsProgramPipeline) {
+        return GLES.glIsProgramPipeline(pipeline);
+    }
+    return GL_FALSE;
+}
+
+void glGetProgramPipelineiv(GLuint pipeline, GLenum pname, GLint* params) {
+    LOG()
+    LOG_D("glGetProgramPipelineiv(%u, 0x%x, %p)", pipeline, pname, params)
+    if (GLES.glGetProgramPipelineiv) {
+        GLES.glGetProgramPipelineiv(pipeline, pname, params);
+    }
+    CHECK_GL_ERROR
+}
+
+GLuint glCreateShaderProgramv(GLenum type, GLsizei count, const GLchar* const* strings) {
+    LOG()
+    LOG_D("glCreateShaderProgramv(0x%x, %d, %p)", type, count, strings)
+    if (GLES.glCreateShaderProgramv) {
+        return GLES.glCreateShaderProgramv(type, count, strings);
+    }
+    return 0;
+}
+
+// Get or create a program pipeline for the given vertex and fragment programs
+GLuint get_or_create_pipeline(GLuint vertex_prog, GLuint fragment_prog) {
+    if (!GLES.glGenProgramPipelines || !GLES.glUseProgramStages) {
+        return 0;
+    }
+    
+    uint64_t key = make_pipeline_key(vertex_prog, fragment_prog);
+    auto it = g_pipeline_cache.find(key);
+    
+    if (it != g_pipeline_cache.end() && it->second.valid) {
+        // Check if programs still exist
+        GLint vs_status = 0, fs_status = 0;
+        if (vertex_prog) GLES.glGetProgramiv(vertex_prog, GL_DELETE_STATUS, &vs_status);
+        if (fragment_prog) GLES.glGetProgramiv(fragment_prog, GL_DELETE_STATUS, &fs_status);
+        
+        if (vs_status != GL_TRUE && fs_status != GL_TRUE) {
+            g_pipeline_hits.fetch_add(1, std::memory_order_relaxed);
+            return it->second.pipeline;
+        }
+        // Programs deleted, invalidate cache entry
+        it->second.valid = false;
+    }
+    
+    g_pipeline_misses.fetch_add(1, std::memory_order_relaxed);
+    
+    // Create new pipeline
+    GLuint pipeline = 0;
+    GLES.glGenProgramPipelines(1, &pipeline);
+    if (pipeline == 0) return 0;
+    
+    if (vertex_prog) {
+        GLES.glUseProgramStages(pipeline, GL_VERTEX_SHADER_BIT, vertex_prog);
+    }
+    if (fragment_prog) {
+        GLES.glUseProgramStages(pipeline, GL_FRAGMENT_SHADER_BIT, fragment_prog);
+    }
+    
+    // Validate
+    GLint validate_status = 0;
+    if (GLES.glValidateProgramPipeline) {
+        GLES.glValidateProgramPipeline(pipeline);
+        GLES.glGetProgramPipelineiv(pipeline, GL_VALIDATE_STATUS, &validate_status);
+        if (validate_status != GL_TRUE) {
+            LOG_W_FORCE("Program pipeline validation failed for pipeline %u", pipeline);
+        }
+    }
+    
+    PipelineCacheEntry entry;
+    entry.pipeline = pipeline;
+    entry.vertex_program = vertex_prog;
+    entry.fragment_program = fragment_prog;
+    entry.valid = true;
+    
+    g_pipeline_cache[key] = std::move(entry);
+    return pipeline;
+}
+
+// Pipeline cache stats API
+extern "C" GLAPI GLAPIENTRY void glGetPipelineCacheStatsEXT(uint64_t* hits, uint64_t* misses) {
+    if (hits) *hits = g_pipeline_hits.load(std::memory_order_relaxed);
+    if (misses) *misses = g_pipeline_misses.load(std::memory_order_relaxed);
+}
+
+extern "C" GLAPI GLAPIENTRY void glResetPipelineCacheStatsEXT() {
+    g_pipeline_hits.store(0, std::memory_order_relaxed);
+    g_pipeline_misses.store(0, std::memory_order_relaxed);
+}
 
 #define DEBUG 0
 

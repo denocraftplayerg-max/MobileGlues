@@ -20,6 +20,87 @@ static GLint maxBufferId = 0;
 static GLint maxArrayId = 0;
 
 // ---------------------------------------------------------------------------
+// Persistent Buffer Mapping (GL_EXT_buffer_storage optimization)
+// ---------------------------------------------------------------------------
+// Maps buffer once with GL_MAP_PERSISTENT_BIT | GL_MAP_WRITE_BIT | GL_MAP_COHERENT_BIT
+// and writes directly to the mapped pointer, avoiding repeated glBufferSubData calls.
+
+#include <unordered_map>
+#include <atomic>
+#include <chrono>
+
+std::unordered_map<GLuint, PersistentBufferMapping> g_persistent_buffer_mappings;
+std::atomic<uint64_t> g_buffer_upload_time_us{0};
+std::atomic<bool> g_persistent_buffer_enabled{true};
+
+void* get_persistent_buffer_mapping(GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access) {
+    if (!g_persistent_buffer_enabled.load(std::memory_order_relaxed)) {
+        return nullptr;
+    }
+    
+    if (!GLES.glBufferStorageEXT) {
+        return nullptr;
+    }
+    
+    auto it = g_persistent_buffer_mappings.find(buffer);
+    if (it == g_persistent_buffer_mappings.end()) {
+        // Create new persistent mapping
+        PersistentBufferMapping mapping;
+        mapping.buffer = buffer;
+        mapping.offset = offset;
+        mapping.length = length;
+        mapping.access = access | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+        
+        // Map the buffer persistently
+        borrowed_target_t t(GL_ARRAY_BUFFER);  // Use a generic target
+        GLES.glBindBuffer(GL_ARRAY_BUFFER, buffer);
+        mapping.mapped_ptr = GLES.glMapBufferRange(GL_ARRAY_BUFFER, offset, length, mapping.access);
+        GLES.glBindBuffer(GL_ARRAY_BUFFER, 0);
+        
+        if (mapping.mapped_ptr) {
+            mapping.active = true;
+            g_persistent_buffer_mappings[buffer] = std::move(mapping);
+            return g_persistent_buffer_mappings[buffer].mapped_ptr;
+        }
+        return nullptr;
+    } else {
+        // Check if existing mapping matches requested range
+        if (it->second.active && it->second.offset == offset && it->second.length == length) {
+            return it->second.mapped_ptr;
+        }
+        // Range changed, need to remap
+        unmap_persistent_buffer(buffer);
+        return get_persistent_buffer_mapping(buffer, offset, length, access);
+    }
+}
+
+void flush_persistent_buffer_mapping(GLuint buffer) {
+    auto it = g_persistent_buffer_mappings.find(buffer);
+    if (it != g_persistent_buffer_mappings.end() && it->second.active) {
+        // With GL_MAP_COHERENT_BIT, explicit flush is not needed
+        // But we can call glFlushMappedBufferRange for completeness
+        if (!global_settings.buffer_coherent_as_flush) {
+            borrowed_target_t t(GL_ARRAY_BUFFER);
+            GLES.glBindBuffer(GL_ARRAY_BUFFER, buffer);
+            GLES.glFlushMappedBufferRange(GL_ARRAY_BUFFER, it->second.offset, it->second.length);
+            GLES.glBindBuffer(GL_ARRAY_BUFFER, 0);
+        }
+    }
+}
+
+void unmap_persistent_buffer(GLuint buffer) {
+    auto it = g_persistent_buffer_mappings.find(buffer);
+    if (it != g_persistent_buffer_mappings.end() && it->second.active) {
+        borrowed_target_t t(GL_ARRAY_BUFFER);
+        GLES.glBindBuffer(GL_ARRAY_BUFFER, buffer);
+        GLES.glUnmapBuffer(GL_ARRAY_BUFFER);
+        GLES.glBindBuffer(GL_ARRAY_BUFFER, 0);
+        it->second.active = false;
+        it->second.mapped_ptr = nullptr;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Per-share-group and per-context storage
 //
 // GL scopes buffer names to the share group -- two contexts created against each
@@ -1026,8 +1107,36 @@ void glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage
 void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void* data) {
     LOG()
     LOG_D("glBufferSubData, target = %s, offset = %p, size = %zi", glEnumToString(target), (void*)offset, size)
-    borrowed_target_t t(target);
-    GLES.glBufferSubData(t.target, offset, size, data);
+    
+    auto start_time = std::chrono::high_resolution_clock::now();
+    
+    // Try persistent mapping first
+    GLuint buffer = find_bound_buffer_by_target(target);
+    void* persistent_ptr = nullptr;
+    
+    if (g_persistent_buffer_enabled.load(std::memory_order_relaxed) && GLES.glBufferStorageEXT) {
+        persistent_ptr = get_persistent_buffer_mapping(buffer, offset, size, GL_MAP_WRITE_BIT);
+    }
+    
+    if (persistent_ptr) {
+        // Write directly to persistently mapped memory
+        memcpy(static_cast<char*>(persistent_ptr) + offset, data, static_cast<size_t>(size));
+        // With GL_MAP_COHERENT_BIT, no explicit flush needed
+        if (!global_settings.buffer_coherent_as_flush) {
+            flush_persistent_buffer_mapping(buffer);
+        }
+    } else {
+        // Fallback to regular glBufferSubData
+        borrowed_target_t t(target);
+        GLES.glBufferSubData(t.target, offset, size, data);
+    }
+    
+    auto end_time = std::chrono::high_resolution_clock::now();
+    g_buffer_upload_time_us.fetch_add(
+        std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count(),
+        std::memory_order_relaxed
+    );
+    
     CHECK_GL_ERROR
 }
 
@@ -1180,4 +1289,22 @@ void glBindVertexArray(GLuint array) {
     LOG_D("glBindVertexArray: %d -> %d", array, real_array)
     GLES.glBindVertexArray(real_array);
     CHECK_GL_ERROR
+}
+
+// ---------------------------------------------------------------------------
+// Persistent Buffer Mapping Stats API (GL_EXT_buffer_storage)
+// ---------------------------------------------------------------------------
+
+extern "C" GLAPI GLAPIENTRY void glGetPersistentBufferStatsEXT(uint64_t* upload_time_us, bool* enabled) {
+    if (upload_time_us) *upload_time_us = g_buffer_upload_time_us.load(std::memory_order_relaxed);
+    if (enabled) *enabled = g_persistent_buffer_enabled.load(std::memory_order_relaxed);
+}
+
+extern "C" GLAPI GLAPIENTRY void glSetPersistentBufferEnabledEXT(bool enabled) {
+    g_persistent_buffer_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+extern "C" GLAPI GLAPIENTRY void glResetPersistentBufferStatsEXT() {
+    g_buffer_upload_time_us.store(0, std::memory_order_relaxed);
+    // Note: we don't clear the mappings, just the counter
 }

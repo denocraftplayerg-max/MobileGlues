@@ -112,6 +112,11 @@ extern "C"
     GLAPI GLAPIENTRY void glMultiDrawElementsIndirectCount(GLenum mode, GLenum type, const void* indirect,
                                                            GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride);
 
+    // GL_EXT_multi_draw_arrays batching extensions
+    GLAPI GLAPIENTRY void glMultiDrawArraysFlushBatchEXT();
+    GLAPI GLAPIENTRY void glGetMultiDrawArraysStatsEXT(uint64_t* before, uint64_t* after);
+    GLAPI GLAPIENTRY void glResetMultiDrawArraysStatsEXT();
+
 #ifdef __cplusplus
 }
 #endif

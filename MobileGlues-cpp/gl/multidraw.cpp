@@ -321,6 +321,45 @@ static GLint g_count_loc_max = -1, g_count_loc_srcwords = -1, g_count_loc_srcoff
 static md_probe_state_t g_mdbv_state = md_probe_state_t::Unprobed;
 static md_probe_state_t g_mda_state = md_probe_state_t::Unprobed;
 
+// ---------------------------------------------------------------------------
+// MultiDraw Arrays Batching (GL_EXT_multi_draw_arrays optimization)
+// ---------------------------------------------------------------------------
+// Groups consecutive compatible glDrawArrays calls into a single glMultiDrawArraysEXT
+// call when: same shader, same VAO, same GL state, compatible ranges.
+static std::atomic<uint64_t> g_multi_draw_calls_before{0};
+static std::atomic<uint64_t> g_multi_draw_calls_after{0};
+
+struct md_batch_state_t {
+    GLenum mode = 0;
+    GLuint program = 0;
+    GLuint vao = 0;
+    GLuint array_buffer = 0;
+    GLuint element_buffer = 0;
+    GLuint vertex_attribs_enabled = 0;  // bitmask of enabled attributes
+    std::vector<GLint> firsts;
+    std::vector<GLsizei> counts;
+    bool active = false;
+    
+    void reset() {
+        mode = 0;
+        program = 0;
+        vao = 0;
+        array_buffer = 0;
+        element_buffer = 0;
+        vertex_attribs_enabled = 0;
+        firsts.clear();
+        counts.clear();
+        active = false;
+    }
+    
+    bool matches(GLenum m, GLuint prog, GLuint v, GLuint ab, GLuint eb, GLuint attribs) const {
+        return mode == m && program == prog && vao == v && 
+               array_buffer == ab && element_buffer == eb && vertex_attribs_enabled == attribs;
+    }
+};
+
+static thread_local md_batch_state_t g_md_batch_state;
+
 // Invalidate every cached GL object name when the current context changes.
 //
 // Object names are actually shared across a share group rather than tied to one
@@ -1988,6 +2027,115 @@ void glMultiDrawElementsIndirect(GLenum mode, GLenum type, const void* indirect,
         MD_WARN_ONCE("glMultiDrawElementsIndirect: no indirect draw support on this context");
     }
     CHECK_GL_ERROR
+}
+
+// ---------------------------------------------------------------------------
+// glDrawArrays with MultiDraw Batching (GL_EXT_multi_draw_arrays optimization)
+// ---------------------------------------------------------------------------
+// Flushes the current batch if state doesn't match, then adds to batch.
+// When batch is full or state changes, issues glMultiDrawArraysEXT or falls back.
+
+static void md_flush_batch() {
+    if (!g_md_batch_state.active || g_md_batch_state.firsts.empty()) {
+        return;
+    }
+
+    g_multi_draw_calls_before.fetch_add(g_md_batch_state.firsts.size(), std::memory_order_relaxed);
+    
+    GLsizei drawcount = static_cast<GLsizei>(g_md_batch_state.firsts.size());
+    
+    if (g_mda_ext && mg_multi_draw_arrays_ext_available()) {
+        // Use the extension for batched draw
+        const bool probing = (g_arrays_mda_state == md_probe_state_t::Unprobed);
+        if (probing) mg_md_drain();
+        
+        g_mda_ext(g_md_batch_state.mode, g_md_batch_state.firsts.data(), 
+                  g_md_batch_state.counts.data(), drawcount);
+        
+        if (probing) {
+            const GLenum err = mg_md_check();
+            if (err != GL_NO_ERROR) {
+                MD_WARN_ONCE("multidraw multiarrays: glMultiDrawArraysEXT failed with 0x%04x, disabling it", err);
+                g_arrays_mda_state = md_probe_state_t::Failed;
+            } else {
+                g_arrays_mda_state = md_probe_state_t::Working;
+            }
+        }
+        g_multi_draw_calls_after.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        // Fallback to individual glDrawArrays calls
+        prepareForDraw();
+        for (GLsizei i = 0; i < drawcount; ++i) {
+            if (g_md_batch_state.counts[i] > 0) {
+                GLES.glDrawArrays(g_md_batch_state.mode, g_md_batch_state.firsts[i], g_md_batch_state.counts[i]);
+            }
+        }
+        g_multi_draw_calls_after.fetch_add(drawcount, std::memory_order_relaxed);
+    }
+    
+    CHECK_GL_ERROR;
+    g_md_batch_state.reset();
+}
+
+// This is the main entry point for glDrawArrays that implements batching
+extern "C" GLAPI GLAPIENTRY void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
+    // Get current GL state for batch compatibility check
+    GLuint current_program = gl_state->current_program;
+    GLuint current_vao = find_bound_array();
+    GLuint current_array_buffer = mg_driver_bound_buffer(GL_ARRAY_BUFFER);
+    GLuint current_element_buffer = mg_driver_bound_buffer(GL_ELEMENT_ARRAY_BUFFER);
+    GLuint enabled_attribs = 0;  // Would need to track this from enable.cpp
+    
+    // Check if we can batch this call
+    bool can_batch = g_md_batch_state.active && 
+                     g_md_batch_state.matches(mode, current_program, current_vao, 
+                                             current_array_buffer, current_element_buffer, enabled_attribs) &&
+                     g_md_batch_state.firsts.size() < 100;  // Max batch size
+    
+    if (!can_batch) {
+        // Flush previous batch if any
+        if (g_md_batch_state.active && !g_md_batch_state.firsts.empty()) {
+            md_flush_batch();
+        }
+        // Start new batch
+        g_md_batch_state.mode = mode;
+        g_md_batch_state.program = current_program;
+        g_md_batch_state.vao = current_vao;
+        g_md_batch_state.array_buffer = current_array_buffer;
+        g_md_batch_state.element_buffer = current_element_buffer;
+        g_md_batch_state.vertex_attribs_enabled = enabled_attribs;
+        g_md_batch_state.active = true;
+    }
+    
+    // Add to batch
+    if (count > 0) {
+        g_md_batch_state.firsts.push_back(first);
+        g_md_batch_state.counts.push_back(count);
+    }
+    
+    // If batch is full, flush it
+    if (g_md_batch_state.firsts.size() >= 100) {
+        md_flush_batch();
+    }
+}
+
+// API to explicitly flush the batch (call at frame end or state change)
+extern "C" GLAPI GLAPIENTRY void glMultiDrawArraysFlushBatchEXT() {
+    if (g_md_batch_state.active && !g_md_batch_state.firsts.empty()) {
+        md_flush_batch();
+    }
+}
+
+// Get batching statistics
+extern "C" GLAPI GLAPIENTRY void glGetMultiDrawArraysStatsEXT(uint64_t* before, uint64_t* after) {
+    if (before) *before = g_multi_draw_calls_before.load(std::memory_order_relaxed);
+    if (after) *after = g_multi_draw_calls_after.load(std::memory_order_relaxed);
+}
+
+// Reset batching statistics
+extern "C" GLAPI GLAPIENTRY void glResetMultiDrawArraysStatsEXT() {
+    g_multi_draw_calls_before.store(0, std::memory_order_relaxed);
+    g_multi_draw_calls_after.store(0, std::memory_order_relaxed);
 }
 
 // ---------------------------------------------------------------------------

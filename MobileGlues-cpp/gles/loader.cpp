@@ -241,6 +241,8 @@ void InitGLESCapabilities() {
                 g_gles_caps.GL_EXT_texture_query_lod = 1;
             } else if (strcmp(extension, "GL_EXT_draw_elements_base_vertex") == 0) {
                 g_gles_caps.GL_EXT_draw_elements_base_vertex = 1;
+            } else if (strcmp(extension, "GL_EXT_multi_draw_arrays") == 0) {
+                g_gles_caps.GL_EXT_multi_draw_arrays = 1;
             } else if (strcmp(extension, "GL_EXT_multisample_compatibility") == 0) {
                 g_gles_caps.GL_EXT_multisample_compatibility = 1;
             } else if (strcmp(extension, "GL_EXT_clip_cull_distance") == 0) {

@@ -61,6 +61,10 @@ extern "C"
                                                                         const void* indices, GLsizei instancecount,
                                                                         GLint basevertex, GLuint baseinstance);
 
+    // GL_EXT_draw_elements_base_vertex stats API
+    GLAPI GLAPIENTRY void glGetBaseVertexDrawStatsEXT(uint64_t* native_count, uint64_t* emulated_count);
+    GLAPI GLAPIENTRY void glResetBaseVertexDrawStatsEXT();
+
     GLAPI GLAPIENTRY void glBindImageTexture(GLuint unit, GLuint texture, GLint level, GLboolean layered, GLint layer,
                                              GLenum access, GLenum format);
     GLAPI GLAPIENTRY void glDispatchCompute(GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z);

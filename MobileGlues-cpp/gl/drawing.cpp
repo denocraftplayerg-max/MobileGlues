@@ -23,6 +23,10 @@ extern UnorderedMap<GLuint, bool> program_map_is_sampler_buffer_emulated;
 
 UnorderedMap<GLuint, SamplerInfo> g_samplerCacheForSamplerBuffer;
 
+// GL_EXT_draw_elements_base_vertex stats
+static std::atomic<uint64_t> g_base_vertex_draw_count{0};
+static std::atomic<uint64_t> g_base_vertex_emulated_count{0};
+
 namespace {
 
 // The unit gl/texture.cpp parks the emulated buffer texture on. Kept in step with
@@ -313,10 +317,17 @@ void glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const voi
             if (on) GLES.glDisable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
         }
     } restart_guard{restart_fixed};
+    
+    // Try to use glDrawElementsBaseVertexEXT directly if available
+    // This avoids the CPU-side index rebasing when basevertex is the only difference
+    static std::atomic<uint64_t> g_base_vertex_draw_count{0};
+    static std::atomic<uint64_t> g_base_vertex_emulated_count{0};
+    
     if (hardware->es_version < 320 && !g_gles_caps.GL_EXT_draw_elements_base_vertex &&
         !g_gles_caps.GL_OES_draw_elements_base_vertex) {
         // TODO: use indirect drawing for GLES 3.1
         LOG_D("Emulating glDrawElementsBaseVertex")
+        g_base_vertex_emulated_count.fetch_add(1, std::memory_order_relaxed);
         if (basevertex == 0) {
             GLES.glDrawElements(mode, count, type, indices);
             return;
@@ -408,6 +419,8 @@ void glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const voi
 
         CHECK_GL_ERROR
     } else {
+        // Use the native base vertex support
+        g_base_vertex_draw_count.fetch_add(1, std::memory_order_relaxed);
         GLES.glDrawElementsBaseVertex(mode, count, type, indices, basevertex);
     }
     CHECK_GL_ERROR
@@ -539,6 +552,17 @@ void glDrawElementsInstancedBaseInstance(GLenum mode, GLsizei count, GLenum type
                      baseinstance);
     }
     glDrawElementsInstanced(mode, count, type, indices, instancecount);
+}
+
+// GL_EXT_draw_elements_base_vertex stats API
+extern "C" GLAPI GLAPIENTRY void glGetBaseVertexDrawStatsEXT(uint64_t* native_count, uint64_t* emulated_count) {
+    if (native_count) *native_count = g_base_vertex_draw_count.load(std::memory_order_relaxed);
+    if (emulated_count) *emulated_count = g_base_vertex_emulated_count.load(std::memory_order_relaxed);
+}
+
+extern "C" GLAPI GLAPIENTRY void glResetBaseVertexDrawStatsEXT() {
+    g_base_vertex_draw_count.store(0, std::memory_order_relaxed);
+    g_base_vertex_emulated_count.store(0, std::memory_order_relaxed);
 }
 
 void glDrawElementsInstancedBaseVertexBaseInstance(GLenum mode, GLsizei count, GLenum type, const void* indices,

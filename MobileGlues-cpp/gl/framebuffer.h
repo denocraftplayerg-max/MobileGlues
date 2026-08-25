@@ -78,6 +78,11 @@ extern "C"
     GLAPI GLAPIENTRY void glReadBuffer(GLenum src);
     GLAPI GLAPIENTRY GLenum glCheckFramebufferStatus(GLenum target);
 
+    // GL_EXT_shader_framebuffer_fetch support
+    GLAPI GLAPIENTRY void glFramebufferFetchEnableEXT();
+    GLAPI GLAPIENTRY void glFramebufferFetchDisableEXT();
+    GLAPI GLAPIENTRY void glGetFramebufferFetchStatsEXT(bool* enabled);
+
 #ifdef __cplusplus
 }
 #endif

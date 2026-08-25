@@ -142,7 +142,7 @@ extern "C"
 
 #if GLOBAL_DEBUG
 #define NATIVE_FUNCTION_END(type, name, ...)                                                                           \
-    LOG_D("Use native function: %s @ %s(...)", RENDERERNAME, __FUNCTION__);                                            \
+    LOG_D("Use native function: %s @ %s(...)" RENDERERNAME, __FUNCTION__);                                            \
     type ret = GLES.name(__VA_ARGS__);                                                                                 \
     GLenum ERR = GLES.glGetError();                                                                                    \
     if (ERR != GL_NO_ERROR) LOG_E("ERROR: %d", ERR)                                                                    \
@@ -150,7 +150,7 @@ extern "C"
     }
 #else
 #define NATIVE_FUNCTION_END(type, name, ...)                                                                           \
-    LOG_D("Use native function: %s @ %s(...)", RENDERERNAME, __FUNCTION__);                                            \
+    LOG_D("Use native function: %s @ %s(...)" RENDERERNAME, __FUNCTION__);                                            \
     type ret = GLES.name(__VA_ARGS__);                                                                                 \
     CHECK_GL_ERROR                                                                                                     \
     return ret;                                                                                                        \
@@ -159,13 +159,13 @@ extern "C"
 
 #if GLOBAL_DEBUG
 #define NATIVE_FUNCTION_END_NO_RETURN(type, name, ...)                                                                 \
-    LOG_D("Use native function: %s @ %s(...)", RENDERERNAME, __FUNCTION__);                                            \
+    LOG_D("Use native function: %s @ %s(...)" RENDERERNAME, __FUNCTION__);                                            \
     GLES.name(__VA_ARGS__);                                                                                            \
     CHECK_GL_ERROR                                                                                                     \
     }
 #else
 #define NATIVE_FUNCTION_END_NO_RETURN(type, name, ...)                                                                 \
-    LOG_D("Use native function: %s @ %s(...)", RENDERERNAME, __FUNCTION__);                                            \
+    LOG_D("Use native function: %s @ %s(...)" RENDERERNAME, __FUNCTION__);                                            \
     GLES.name(__VA_ARGS__);                                                                                            \
     }
 #endif
@@ -175,12 +175,12 @@ extern "C"
         LOG()
 
 #define STUB_FUNCTION_END(type, name, ...)                                                                             \
-    LOG_W("Stub function: %s @ %s(...)", RENDERERNAME, __FUNCTION__);                                                  \
+    LOG_W("Stub function: %s @ %s(...)" RENDERERNAME, __FUNCTION__);                                                  \
     return (type)1;                                                                                                    \
     }
 
 #define STUB_FUNCTION_END_NO_RETURN(type, name, ...)                                                                   \
-    LOG_W("Stub function: %s @ %s(...)", RENDERERNAME, __FUNCTION__);                                                  \
+    LOG_W("Stub function: %s @ %s(...)" RENDERERNAME, __FUNCTION__);                                                  \
     return mg_stub_default<type>();                                                                                    \
     }
 
@@ -203,6 +203,10 @@ extern "C"
         int GL_EXT_texture_rg;
         int GL_EXT_texture_query_lod;
         int GL_EXT_draw_elements_base_vertex;
+        // GL_EXT_multi_draw_arrays deliberately absent: glext.h defines a macro of
+        // that exact name, and gl/multidraw.cpp already probes it lazily because it
+        // needs the entry points as well as the string.
+        int GL_EXT_multi_draw_arrays;
         // Needed by the virtual enable table (gl/enable.cpp): each of these
         // supplies a GL 4.6 enable capability that GLES 3.2 core does not have,
         // using the same enum value as the desktop one. Without them the layer
@@ -214,9 +218,6 @@ extern "C"
         int GL_EXT_sRGB_write_control;       // GL_FRAMEBUFFER_SRGB
         int GL_NV_polygon_mode;              // GL_POLYGON_OFFSET_LINE / _POINT
         int GL_OES_sample_shading;           // GL_SAMPLE_SHADING before ES 3.2
-        // GL_EXT_multi_draw_arrays deliberately absent: glext.h defines a macro of
-        // that exact name, and gl/multidraw.cpp already probes it lazily because it
-        // needs the entry points as well as the string.
     };
 
     extern struct gles_caps_t g_gles_caps;
