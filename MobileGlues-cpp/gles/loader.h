@@ -206,7 +206,7 @@ extern "C"
         // GL_EXT_multi_draw_arrays deliberately absent: glext.h defines a macro of
         // that exact name, and gl/multidraw.cpp already probes it lazily because it
         // needs the entry points as well as the string.
-        int GL_EXT_multi_draw_arrays;
+        int GL_EXT_multi_draw_arrays_supported;
         // Needed by the virtual enable table (gl/enable.cpp): each of these
         // supplies a GL 4.6 enable capability that GLES 3.2 core does not have,
         // using the same enum value as the desktop one. Without them the layer
