@@ -63,6 +63,13 @@ extern "C"
 
     GLuint find_real_buffer(GLuint key);
 
+    // Internal texture-buffer format helpers.
+    bool get_internal_format_transfer(GLenum internalformat,
+                                      GLenum* format,
+                                      GLenum* type);
+
+    size_t get_internal_format_size(GLenum internalformat);
+
     // key is a *_BINDING query enum, the kind glGetIntegerv is given.
     GLuint find_bound_buffer(GLenum key);
     // target is a bind target, the kind glBindBuffer is given. Not interchangeable
